@@ -1,11 +1,36 @@
-install:
-	uv pip install -r requirements.txt
+# Variáveis
+PYTHON = uv
+APP_NAME = crypto-trading-bot
+VENV_DIR = .venv
 
-# run:
-# 	uv run uvicorn main:app --app-dir src --reload
+# Regras
+.PHONY: help venv install sync add remove list run test clean
 
-# test:
-# 	uv run pytest -v
+help:  ## Mostra esta ajuda
+	@echo "Comandos disponíveis:"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
-# clean-cache:
-# 	find . -type d -name "__pycache__" -exec rm -r {} + && find . -type f -name "*.pyc" -delete
+venv:  ## Cria ou ativa o ambiente virtual
+	$(PYTHON) venv
+
+install:  ## Instala as dependências listadas no projeto
+	$(PYTHON) sync
+
+add:  ## Adiciona uma nova biblioteca ao projeto (Ex.: make add PKG=requests)
+	$(PYTHON) add $(PKG)
+
+remove:  ## Remove uma biblioteca do projeto (Ex.: make remove PKG=requests)
+	$(PYTHON) remove $(PKG)
+
+list:  ## Lista as dependências instaladas
+	$(PYTHON) list
+
+run:  ## Executa a aplicação (modifique conforme necessário)
+	uvicorn main:app --reload
+
+test:  ## Executa os testes (usando pytest)
+	$(PYTHON) run pytest
+
+clean:  ## Remove o ambiente virtual e arquivos temporários
+	rm -rf $(VENV_DIR) .pytest_cache __pycache__ *.pyc *.pyo
+
