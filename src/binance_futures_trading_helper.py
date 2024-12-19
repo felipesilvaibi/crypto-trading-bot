@@ -121,6 +121,8 @@ class BinanceFuturesTradingHelper:
             if percent < loss:
                 self.close_position(symbol)
                 print(f"Position closed due to stop loss: {pnl}")
+
+                # time.sleep(10800)
             elif percent >= target:
                 self.close_position(symbol)
                 print(f"Position closed due to take profit: {pnl}")
