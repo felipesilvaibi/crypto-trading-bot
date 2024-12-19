@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-class BinanceTradingHelper:
+class BinanceFuturesTradingHelper:
     """
     Helper class for trading with Binance Futures using the ccxt library.
     """
@@ -107,7 +107,7 @@ class BinanceTradingHelper:
 
             time.sleep(20)
 
-    def manage_pnl(self, symbol: str, loss: float, target: float) -> None:
+    def close_pnl_position(self, symbol: str, loss: float, target: float) -> None:
         """
         Monitors and manages open positions based on PnL targets.
 
