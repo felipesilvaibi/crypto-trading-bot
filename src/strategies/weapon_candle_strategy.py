@@ -1,134 +1,245 @@
 import time
 
 import pandas as pd
-import pandas_ta as ta
 import schedule
-from ta.momentum import RSIIndicator
 
-from src.binance_futures_trading_helper import BinanceFuturesTradingHelper
+from src.helpers.binance.futures_trading_helper import BinanceFuturesTradingHelper
+from src.helpers.indicators_helper import IndicatorsHelper
 
 
 class WeaponCandleStrategy:
-    def job(self):
-        # conexão
-        helper = BinanceFuturesTradingHelper()
+    """
+    A trading strategy based on technical indicators such as RSI, EMA, MACD, and VWAP.
+    """
 
-        # definir par
-        symbol = "BTCUSDT"
+    def __init__(
+        self,
+        symbol: str = "BTCUSDT",
+        load_candles_timeframe: str = "30m",
+        load_candles_limit: int = 48,
+        stop_loss: float = -4.0,
+        profit_target: float = 8.0,
+        max_position_size: float = 0.004,
+        position_size: float = 0.002,
+    ):
+        """
+        Initialize the trading strategy.
 
-        # rodar PNL
-        helper.binance.cancel_all_orders(symbol=symbol)
-        loss = -4
-        target = 8
-        helper.close_pnl_position(symbol=symbol, loss=loss, target=target)
+        :param symbol: Trading pair symbol (e.g., "BTCUSDT").
+        :param load_candles_timeframe: Timeframe for loading candle data (e.g., "30m").
+        :param load_candles_limit: Number of candles to load for calculations.
+        :param stop_loss: Stop-loss percentage.
+        :param profit_target: Target profit percentage.
+        :param max_position_size: Maximum allowable position size.
+        :param position_size: Position size to open.
+        """
+        self.symbol = symbol
+        self.load_candles_timeframe = load_candles_timeframe
+        self.load_candles_limit = load_candles_limit
+        self.stop_loss = stop_loss
+        self.profit_target = profit_target
+        self.max_position_size = max_position_size
+        self.position_size = position_size
 
-        # tamanho maximo, tamanho da ordem, loss, gain
-        posicao_max = 0.004
-        posicao = 0.002
+        self.helper = BinanceFuturesTradingHelper()
 
-        # importar candles
-        timeframe = "30m"
-        bars = helper.binance.fetch_ohlcv(symbol, timeframe, limit=48)
-        df_candles = pd.DataFrame(
-            bars, columns=["time", "abertura", "max", "min", "fechamento", "volume"]
+    def execute_strategy(self):
+        """
+        Executes the trading strategy by managing positions, loading candles, calculating indicators,
+        and checking conditions for new orders.
+        """
+        print("Starting strategy execution...")
+
+        self.clear_old_positions()
+
+        df_candles = self.load_candles()
+        df_candles = self.calculate_indicators(df_candles)
+
+        self.check_and_place_orders(df_candles)
+
+        print("Strategy execution completed.\n")
+
+    def clear_old_positions(self):
+        """
+        Clears old positions based on loss and target thresholds.
+        """
+        self.helper.clear_old_positions(
+            symbol=self.symbol, loss=self.stop_loss, target=self.profit_target
         )
-        df_candles["time"] = pd.to_datetime(
-            df_candles["time"], unit="ms", utc=True
-        ).map(lambda x: x.tz_convert("America/Sao_Paulo"))
 
-        # criar métricas da estratégia
-        rsi = RSIIndicator(df_candles["fechamento"], window=14)
-        df_candles["rsi"] = rsi.rsi()
+    def load_candles(self) -> pd.DataFrame:
+        """
+        Loads the candle data.
 
-        ema_20 = ta.ema(df_candles["fechamento"], length=20)
-        df_candles["EMA_20"] = ema_20
-
-        df_candles.ta.macd(close="fechamento", fast=12, slow=26, signal=9, append=True)
-
-        df_candles["price_weighted"] = df_candles["fechamento"] * df_candles["volume"]
-        df_candles["VWAP"] = (
-            df_candles["price_weighted"].sum() / df_candles["volume"].sum()
+        :return: A DataFrame containing the candle data.
+        """
+        print("Loading candles...")
+        return self.helper.load_candles(
+            symbol=self.symbol,
+            timeframe=self.load_candles_timeframe,
+            limit=self.load_candles_limit,
         )
 
-        print(f"RSI: {df_candles['rsi'].iloc[-1]}")
-        print(f"EMA_20: {df_candles['EMA_20'].iloc[-1]}")
-        print(f"MACD: {df_candles['MACD_12_26_9'].iloc[-1]}")
-        print(f"VWAP: {df_candles['VWAP'].iloc[-1]}")
-        print(f"Preço: {df_candles['fechamento'].iloc[-1]}")
+    def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculates the required technical indicators and logs their values.
 
-        # condições de long e short
-        price = helper.binance.fetch_trades(symbol, limit=1)[0]["price"]
-        price = float(helper.binance.price_to_precision(symbol, price))
+        :param df: A DataFrame containing the candle data.
+        :return: A DataFrame containing the candle data with calculated indicators.
+        """
+        print("Calculating technical indicators...")
+        df["rsi"] = IndicatorsHelper.calculate_rsi(df)
+        df["EMA_20"] = IndicatorsHelper.calculate_ema(df)
+        IndicatorsHelper.calculate_macd(df)
+        df["VWAP"] = IndicatorsHelper.calculate_vwap(df)
+        print("Indicators successfully calculated.")
 
-        if (
-            df_candles["rsi"].iloc[-1] <= 30
-            and price >= df_candles["EMA_20"].iloc[-1]
-            and price >= df_candles["VWAP"].iloc[-1]
-            and df_candles["MACD_12_26_9"].iloc[-1]
-            >= df_candles["MACDs_12_26_9"].iloc[-1]
-        ):
-            if (
-                not helper.has_exceeded_max_size(symbol, posicao_max)
-                and helper.get_open_positions(symbol)[0] != "short"
-                and not helper.is_last_order_open(symbol)
-            ):
-                try:
-                    bid, ask = helper.get_order_book(symbol)
-                    bid_price = helper.binance.price_to_precision(symbol, float(bid))
-                    helper.binance.create_order(
-                        symbol=symbol,
-                        type="limit",
-                        side="buy",
-                        price=bid_price,
-                        amount=posicao,
-                        params={"hedged": True},
-                    )
+        # Log indicators
+        print(f"RSI: {df['rsi'].iloc[-1]}")
+        print(f"EMA_20: {df['EMA_20'].iloc[-1]}")
+        print(f"MACD: {df['MACD_12_26_9'].iloc[-1]}")
+        print(f"MACD Signal: {df['MACDs_12_26_9'].iloc[-1]}")
+        print(f"VWAP: {df['VWAP'].iloc[-1]}")
+        print(f"Price: {df['close'].iloc[-1]}")
 
-                    print(
-                        f"Abrindo posição long em {bid_price}, tamanho {posicao}, par {symbol}"
-                    )
-                except Exception as e:
-                    print(f"Erro ao abrir posição long: {e}")
-        elif (
-            df_candles["rsi"].iloc[-1] >= 70
-            and price <= df_candles["EMA_20"].iloc[-1]
-            and price <= df_candles["VWAP"].iloc[-1]
-            and df_candles["MACD_12_26_9"].iloc[-1]
-            <= df_candles["MACDs_12_26_9"].iloc[-1]
-        ):
-            if (
-                not helper.has_exceeded_max_size(symbol, posicao_max)
-                and helper.get_open_positions(symbol)[0] != "long"
-                and not helper.is_last_order_open(symbol)
-            ):
-                try:
-                    bid, ask = helper.get_order_book(symbol)
-                    ask_price = helper.binance.price_to_precision(symbol, float(ask))
-                    helper.binance.create_order(
-                        symbol=symbol,
-                        type="limit",
-                        side="sell",
-                        price=ask_price,
-                        amount=posicao,
-                        params={"hedged": True},
-                    )
+        return df
 
-                    print(
-                        f"Abrindo posição short em {ask_price}, tamanho {posicao}, par {symbol}"
-                    )
-                except Exception as e:
-                    print(f"Erro ao abrir posição short: {e}")
-        else:
-            print("Nenhuma condição atendida para abrir posição")
+    def check_and_place_orders(self, df: pd.DataFrame):
+        """
+        Checks the conditions for entering new orders (long or short) and places orders if conditions are met.
+
+        :param df: A DataFrame containing the candle data and indicators.
+        """
+        try:
+            price = self.helper.get_last_trade_price(self.symbol)
+            if price is None:
+                return
+
+            if self.can_open_long_position_by_strategy_rule(df, price):
+                print("LONG entry conditions met.")
+                if self.helper.can_open_position_by_default_rule(
+                    self.symbol, self.max_position_size, expected_side="long"
+                ):
+                    pass
+                    # Uncomment to open position:
+                    # self.helper.open_position(self.symbol, "long", self.position_size)
+            elif self.can_open_short_position_by_strategy(df, price):
+                print("SHORT entry conditions met.")
+                if self.helper.can_open_position_by_default_rule(
+                    self.symbol, self.max_position_size, expected_side="short"
+                ):
+                    pass
+                    # Uncomment to open position:
+                    # self.helper.open_position(self.symbol, "short", self.position_size)
+            else:
+                print("No entry conditions met.")
+                # Call the function to print differences
+                self.print_indicator_differences(df, price)
+        except Exception as e:
+            print(f"Error checking entry conditions: {e}")
+
+    def print_indicator_differences(self, df: pd.DataFrame, price: float):
+        """
+        Prints the differences between the current indicators and what would be needed to meet
+        the conditions for short and long entries.
+        """
+        rsi = df["rsi"].iloc[-1]
+        ema = df["EMA_20"].iloc[-1]
+        vwap = df["VWAP"].iloc[-1]
+        macd = df["MACD_12_26_9"].iloc[-1]
+        macd_signal = df["MACDs_12_26_9"].iloc[-1]
+
+        # Conditions for LONG:
+        # RSI <= 30, price >= EMA, price >= VWAP, MACD >= MACD Signal
+        # For each condition, calculate how much adjustment is needed if it's not met:
+        diff_rsi_long = (rsi - 30) if rsi > 30 else 0.0  # How much RSI must decrease
+        diff_ema_long = (
+            (ema - price) if price < ema else 0.0
+        )  # How much price must increase to reach EMA
+        diff_vwap_long = (
+            (vwap - price) if price < vwap else 0.0
+        )  # How much price must increase to reach VWAP
+        diff_macd_long = (
+            (macd_signal - macd) if macd < macd_signal else 0.0
+        )  # How much MACD must increase
+
+        # Conditions for SHORT:
+        # RSI >= 70, price <= EMA, price <= VWAP, MACD <= MACD Signal
+        diff_rsi_short = (70 - rsi) if rsi < 70 else 0.0  # How much RSI must increase
+        diff_ema_short = (
+            (price - ema) if price > ema else 0.0
+        )  # How much price must decrease to reach EMA
+        diff_vwap_short = (
+            (price - vwap) if price > vwap else 0.0
+        )  # How much price must decrease to reach VWAP
+        diff_macd_short = (
+            (macd - macd_signal) if macd > macd_signal else 0.0
+        )  # How much MACD must decrease
+
+        print("Differences needed to meet LONG conditions:")
+        print(f"RSI must decrease by: {diff_rsi_long:.4f}")
+        print(f"Price must increase by: {diff_ema_long:.4f} to reach EMA")
+        print(f"Price must increase by: {diff_vwap_long:.4f} to reach VWAP")
+        print(f"MACD must increase by: {diff_macd_long:.4f}")
+
+        print("Differences needed to meet SHORT conditions:")
+        print(f"RSI must increase by: {diff_rsi_short:.4f}")
+        print(f"Price must decrease by: {diff_ema_short:.4f} to reach EMA")
+        print(f"Price must decrease by: {diff_vwap_short:.4f} to reach VWAP")
+        print(f"MACD must decrease by: {diff_macd_short:.4f}")
+
+    def can_open_long_position_by_strategy_rule(
+        self, df: pd.DataFrame, price: float
+    ) -> bool:
+        """
+        Determines if a long position can be opened based on strategy conditions.
+
+        :param df: A DataFrame containing the candle data and indicators.
+        :param price: The current market price.
+        :return: True if a long position can be opened, False otherwise.
+        """
+        return (
+            df["rsi"].iloc[-1] <= 30
+            and price >= df["EMA_20"].iloc[-1]
+            and price >= df["VWAP"].iloc[-1]
+            and df["MACD_12_26_9"].iloc[-1] >= df["MACDs_12_26_9"].iloc[-1]
+        )
+
+    def can_open_short_position_by_strategy(
+        self, df: pd.DataFrame, price: float
+    ) -> bool:
+        """
+        Determines if a short position can be opened based on strategy conditions.
+
+        :param df: A DataFrame containing the candle data and indicators.
+        :param price: The current market price.
+        :return: True if a short position can be opened, False otherwise.
+        """
+        return (
+            df["rsi"].iloc[-1] >= 70
+            and price <= df["EMA_20"].iloc[-1]
+            and price <= df["VWAP"].iloc[-1]
+            and df["MACD_12_26_9"].iloc[-1] <= df["MACDs_12_26_9"].iloc[-1]
+        )
 
 
 if __name__ == "__main__":
-    strategy = WeaponCandleStrategy()
-    schedule.every(5).seconds.do(strategy.job)
+    strategy = WeaponCandleStrategy(
+        symbol="BTCUSDT",
+        load_candles_timeframe="30m",
+        load_candles_limit=48,
+        stop_loss=-4,
+        profit_target=8,
+        max_position_size=0.004,
+        position_size=0.002,
+    )
+
+    schedule.every(5).seconds.do(strategy.execute_strategy)
 
     while True:
         try:
             schedule.run_pending()
+            time.sleep(1)
         except Exception as e:
-            print(f"Erro no loop principal: {e}")
+            print(f"Error in main loop: {e}")
             time.sleep(10)
